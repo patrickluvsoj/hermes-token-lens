@@ -678,7 +678,10 @@
   if (window.__HERMES_PLUGINS__ && typeof window.__HERMES_PLUGINS__.register === "function") {
     window.__HERMES_PLUGINS__.register("token-lens", TokenLensPage);
     if (typeof window.__HERMES_PLUGINS__.registerSlot === "function") {
-      window.__HERMES_PLUGINS__.registerSlot("sessions:top", "token-lens", EntryCard);
+      // Runtime signature is registerSlot(plugin, slot, component) — note the
+      // host's sdk.d.ts documents (slot, name, component), which is WRONG
+      // versus web/src/plugins/slots.ts. Verified against the runtime.
+      window.__HERMES_PLUGINS__.registerSlot("token-lens", "sessions:top", EntryCard);
     }
   }
 })();

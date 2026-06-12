@@ -179,11 +179,18 @@ class _Recorder:
             self.flush()
 
     def enqueue_post(self, payload: Dict[str, Any]) -> None:
+        """A post event completes a pre/post pair — flush immediately.
+
+        The write is one BEGIN IMMEDIATE txn (~sub-ms) at the END of an API
+        call, where provider latency dwarfs it. Buffering posts behind the
+        20-call/5s thresholds loses the tail of short sessions: one-shot
+        (``hermes -z``) processes can exit before any timer flush or
+        finalize hook fires (observed live in M1 QA — fast one-shots
+        recorded nothing). Pre events stay buffered (they fire mid-call,
+        on the hot path)."""
         with self._lock:
             self._buffer.append(("post", payload))
-            should_flush = time.time() - self._last_flush >= FLUSH_EVERY_SECONDS
-        if should_flush:
-            self.flush()
+        self.flush()
 
     def flush(self) -> None:
         """One flush batch = one BEGIN IMMEDIATE transaction."""
@@ -426,6 +433,11 @@ def _drain_refresh_queue_async() -> None:
             return
         try:
             _drain_refresh_queue(conn)
+            # Also run detectors at session START (gate-checked, watermark-
+            # idempotent). One-shot (`hermes -z`) processes can exit without
+            # firing on_session_finalize, so finalize-only detector runs
+            # would never happen for one-shot-heavy usage (observed in QA).
+            _run_detectors_if_due(conn)
         except Exception:
             pass
         finally:
@@ -441,9 +453,20 @@ def _drain_refresh_queue_async() -> None:
 # Plugin entry point
 # ---------------------------------------------------------------------------
 
+def _atexit_flush() -> None:
+    """Belt-and-braces: never lose buffered rows at process exit. Rollups for
+    sessions that die unfinalized are recovered by the dashboard sweep."""
+    try:
+        _RECORDER.flush()
+    except Exception:
+        pass
+
+
 def register(ctx) -> None:
     ctx.register_hook("pre_api_request", on_pre_api_request)
     ctx.register_hook("post_api_request", on_post_api_request)
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
     ctx.register_hook("on_session_start", on_session_start)
     ctx.register_hook("on_session_finalize", on_session_finalize)
+    import atexit
+    atexit.register(_atexit_flush)
