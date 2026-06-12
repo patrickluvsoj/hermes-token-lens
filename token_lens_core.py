@@ -962,6 +962,176 @@ def observed_delta(
 
 
 # ---------------------------------------------------------------------------
+# Core SessionDB access (read-only) + backfill
+# ---------------------------------------------------------------------------
+
+def core_state_db_path() -> Path:
+    home = os.environ.get("HERMES_HOME", "") or os.path.expanduser("~/.hermes")
+    return Path(home) / "state.db"
+
+
+def open_core_db_readonly() -> Optional[sqlite3.Connection]:
+    """Open hermes' state.db strictly read-only (URI mode=ro). Never takes a
+    write lock on core's DB; returns None when it doesn't exist."""
+    path = core_state_db_path()
+    if not path.exists():
+        return None
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0,
+                           check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def read_core_session_totals(session_id: str) -> Optional[Dict[str, int]]:
+    """Session-level token accumulators from core, for ±2% reconciliation.
+
+    billed total = input + cache_read + cache_write + output (matches the
+    rollup's billed definition and core Analytics' counting — D16)."""
+    try:
+        conn = open_core_db_readonly()
+        if conn is None:
+            return None
+        try:
+            row = conn.execute(
+                "SELECT input_tokens, output_tokens, cache_read_tokens,"
+                " cache_write_tokens, reasoning_tokens FROM sessions WHERE id=?",
+                (session_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        total = (int(row["input_tokens"] or 0) + int(row["cache_read_tokens"] or 0)
+                 + int(row["cache_write_tokens"] or 0) + int(row["output_tokens"] or 0))
+        return {"total_tokens": total} if total > 0 else None
+    except Exception:
+        return None
+
+
+BACKFILL_CHUNK = 10
+
+
+def backfill(
+    conn: sqlite3.Connection,
+    *,
+    days: int = 30,
+    core_db: Optional[sqlite3.Connection] = None,
+    progress_cb=None,
+) -> Dict[str, Any]:
+    """Walk core SessionDB sessions in the window and write estimated rollups.
+
+    Resumable: sessions already rolled up are skipped, and commits land in
+    chunks of BACKFILL_CHUNK so a crash resumes instead of restarting (plan
+    §Dashboard-side execution bounds). Backfill provides trend context, not
+    attribution-grade evidence — provenance='backfill' never satisfies gates.
+    Sessions older than the message-retention window degrade to totals-only
+    rows (whole-session tokens land in 'unattributed' minus what roles claim).
+    """
+    src = core_db or open_core_db_readonly()
+    if src is None:
+        return {"status": "done", "sessions": 0, "skipped": 0,
+                "note": "no core state.db"}
+    owns_src = core_db is None
+    cutoff = time.time() - days * 86400.0
+    done = 0
+    skipped = 0
+    try:
+        sessions = src.execute(
+            "SELECT id, started_at, ended_at, input_tokens, output_tokens,"
+            " cache_read_tokens, cache_write_tokens, reasoning_tokens,"
+            " message_count, tool_call_count, api_call_count"
+            " FROM sessions WHERE started_at >= ? ORDER BY started_at",
+            (cutoff,),
+        ).fetchall()
+        _rules_version, rules = load_rules(conn)
+        chunk = 0
+        for sess in sessions:
+            sid = sess["id"]
+            if conn.execute(
+                "SELECT 1 FROM session_rollups WHERE session_id=?", (sid,)
+            ).fetchone():
+                skipped += 1
+                continue
+            billed = (int(sess["input_tokens"] or 0)
+                      + int(sess["cache_read_tokens"] or 0)
+                      + int(sess["cache_write_tokens"] or 0)
+                      + int(sess["output_tokens"] or 0))
+            if billed <= 0:
+                skipped += 1
+                continue
+            msgs = src.execute(
+                "SELECT role, content, token_count FROM messages "
+                "WHERE session_id=? AND active=1 ORDER BY id",
+                (sid,),
+            ).fetchall()
+            est: Dict[str, int] = {}
+            for m in msgs:
+                role = m["role"] or ""
+                tok = int(m["token_count"] or 0) or estimate_tokens(m["content"] or "")
+                if role == "system":
+                    for cat, t in decompose_system_prompt(m["content"] or "", rules).items():
+                        est[cat] = est.get(cat, 0) + t
+                elif role == "user":
+                    est["history.user"] = est.get("history.user", 0) + tok
+                elif role == "assistant":
+                    est["output"] = est.get("output", 0) + tok
+                elif role == "tool":
+                    est["tool_results"] = est.get("tool_results", 0) + tok
+                else:
+                    est["unattributed"] = est.get("unattributed", 0) + tok
+            prompt_billed = (int(sess["input_tokens"] or 0)
+                             + int(sess["cache_read_tokens"] or 0)
+                             + int(sess["cache_write_tokens"] or 0))
+            input_est = {k: v for k, v in est.items() if k != "output"}
+            calibrated, _scale = calibrate(input_est, prompt_billed or None)
+            if not input_est and prompt_billed:
+                # totals-only session (messages pruned): honest unattributed
+                calibrated = {"unattributed": float(prompt_billed)}
+            calibrated["output"] = float(sess["output_tokens"] or 0)
+            if sess["reasoning_tokens"]:
+                calibrated["reasoning"] = float(sess["reasoning_tokens"])
+            totals = {
+                "input": int(sess["input_tokens"] or 0),
+                "output": int(sess["output_tokens"] or 0),
+                "cache_read": int(sess["cache_read_tokens"] or 0),
+                "cache_write": int(sess["cache_write_tokens"] or 0),
+                "reasoning": int(sess["reasoning_tokens"] or 0),
+                "billed": billed,
+            }
+            with write_txn(conn):
+                conn.execute(
+                    """
+                    INSERT INTO session_rollups (session_id, analyzed_at,
+                        analyzer_version, rules_version, precision, provenance,
+                        totals_json, buckets_json, api_calls, turns,
+                        started_ts, ended_ts)
+                    VALUES (?, ?, ?, ?, 'estimated', 'backfill', ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(session_id) DO NOTHING
+                    """,
+                    (sid, time.time(), ANALYZER_VERSION, _rules_version,
+                     json.dumps(totals), json.dumps(calibrated),
+                     int(sess["api_call_count"] or 0),
+                     int(sess["message_count"] or 0),
+                     sess["started_at"], sess["ended_at"]),
+                )
+            done += 1
+            chunk += 1
+            if progress_cb and chunk >= BACKFILL_CHUNK:
+                chunk = 0
+                progress_cb(done, len(sessions))
+        if progress_cb:
+            progress_cb(done, len(sessions))
+        return {"status": "done", "sessions": done, "skipped": skipped,
+                "window_days": days}
+    finally:
+        if owns_src:
+            try:
+                src.close()
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
 # Retention
 # ---------------------------------------------------------------------------
 

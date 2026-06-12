@@ -357,22 +357,9 @@ def on_session_finalize(*, session_id: str = "", **_: Any) -> None:
 
 
 def _core_session_totals(session_id: str) -> Optional[Dict[str, int]]:
-    """Read the session-level token totals from core SessionDB for the ±2%
-    reconciliation. Best-effort: None when core internals are unreachable."""
-    try:
-        from hermes_state import SessionDB  # type: ignore
-        db = SessionDB()
-        sess = db.get_session(session_id)
-        total = None
-        if isinstance(sess, dict):
-            total = sess.get("total_tokens") or sess.get("token_count")
-        else:
-            total = getattr(sess, "total_tokens", None)
-        if total:
-            return {"total_tokens": int(total)}
-    except Exception:
-        pass
-    return None
+    """Session-level totals from core state.db (read-only) for the ±2%
+    reconciliation. Best-effort: None when unreachable."""
+    return core.read_core_session_totals(session_id)
 
 
 # ---------------------------------------------------------------------------
