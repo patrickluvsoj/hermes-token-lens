@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.2.0] — 2026-06-12
+
+**M2: the suggestion engine thinks. AI-evaluated fixes, self-evolving rules, hard-capped overhead.**
+
+Token Lens now generates AI suggestions from your aggregates — never your
+transcripts — and grades its own output before showing you anything.
+
+### What you can do now
+
+- **AI suggestions after 10 sessions.** The engine feeds deterministic
+  aggregates (category totals, schema cost vs usage, cache stats, config
+  snapshot incl. tool-search state) to your active model and gets back
+  evidence-cited suggestions with copy-paste plans. Verified live: it found
+  the same unused-MCP-server waste the deterministic detector found,
+  independently, citing exact numbers.
+- **A rubric gates what you see.** Every suggestion is scored 0–10
+  (usefulness, specificity, savings credibility, risk honesty,
+  actionability); below-threshold output stays hidden. Eval-proven
+  discrimination: strong fixture 8.5, vague 0.5, dishonest 0.0.
+- **`hermes token-lens refresh`** — manual/cron entry point honoring all
+  gates (`--force` for testing). The dashboard's Refresh button now spawns
+  it detached, so results arrive in ~1 minute instead of at next session.
+- **Self-evolution, never silent.** The engine may propose category
+  mapping-rule improvements and rubric amendments; they auto-apply as
+  versioned rows under hard guardrails (≤7 criteria, scale fixed at 10,
+  threshold immutable, prior scores never rewritten) and every change is
+  logged human-readably to `~/.hermes/token_lens.EVOLUTION.md`.
+- **Overhead is visible and capped.** Every engine call's tokens land in the
+  meta ledger (footer: "Token Lens overhead: N tokens this week");
+  `meta_budget_tokens` (default 50k) hard-aborts a refresh that exceeds it.
+
+### For contributors
+
+113 pytest paths + 2 e2e scripts + 2 manual evals (`evals/` — they cost
+tokens; both green against a live provider at release).
+
 ## [0.1.0] — 2026-06-12
 
 **M1: the honest ledger ships. Exact totals, calibrated attribution, deterministic findings.**

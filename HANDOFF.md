@@ -1,4 +1,4 @@
-# HANDOFF — Token Lens plugin (M1 COMPLETE, verified end-to-end live)
+# HANDOFF — Token Lens plugin (M1 + M2 COMPLETE — v0.2.0, design plan fully implemented)
 
 Self-contained status doc for any agent (Claude, Codex, Hermes) or human
 resuming this work. No prior conversation context required.
@@ -106,24 +106,50 @@ as designed, but /health will raise the drift alert once a median builds;
 improving the estimator is an M2 candidate. By-model table shows recorder
 data only (backfill windows show it empty while charts have data).
 
-## REMAINING — in order
+## M2 — DONE (2026-06-12, v0.2.0; all design-plan scope implemented)
 
-### 1. M1 polish
-- Theme-switch QA (3 Hermes themes) — `--tl-*` vars map to host tokens, verify
-  contrast + hatching in light themes (NOT yet done).
-- Write the plan's e2e scripts `e2e/install_flow.sh`, `e2e/unlock_flow.sh`
-  (specified in design plan §Testing; the manual QA above proved the flows).
-- README screenshots; tag v0.1.0.
+- Theme QA: Nous Blue (light), Midnight, Cyberpunk all render via `--tl-*`
+  token mapping; original theme restored. Screenshots in `/tmp/tl-theme-qa/`.
+- e2e scripts written + green: `e2e/install_flow.sh` (5/5; `TL_RUN_SESSION=1`
+  adds the live-recorder leg), `e2e/unlock_flow.sh` (7/7, scratch DB).
+- **Engine** (`engine.py`): generation (`purpose=token-lens.suggest`) +
+  evaluator (`purpose=token-lens.evaluate`) via `ctx.llm.complete_structured`,
+  deterministic aggregates only (never transcripts), score_threshold hiding,
+  meta ledger + `meta_budget_tokens` hard abort.
+- **CLI**: `hermes token-lens refresh [--force]` registered via
+  `ctx.register_cli_command`; dashboard POST /suggestions/refresh spawns it
+  detached (own copy of the `_spawn_hermes_action` pattern — the core helper
+  is name-gated; log at `~/.hermes/logs/token-lens-refresh.log`).
+- **Evolution**: rule proposals + rubric amendments auto-apply as versioned
+  rows under guardrails; human-readable log at
+  `~/.hermes/token_lens.EVOLUTION.md` (`engine.log_evolution`).
+- **Evals green against a live provider**: eval_evaluator 4/4 (strong 8.5 /
+  vague 0.5 / dishonest 0.0), eval_suggestions 17/17 (planted dead-server
+  waste found; evidence numeric; no fake command surfaces; budget respected).
+- **Live integration proof**: `hermes token-lens refresh --force` on the real
+  install → 1 LLM suggestion shown (3,859 tokens, ledgered) that independently
+  re-found the same unused `gbrain` MCP server the detector flagged.
 
-### 2. M2 (design plan §Suggestion engine — all specified, none built)
-- LLM suggestion generation via `ctx.llm.complete_structured`
-  (`purpose="token-lens.suggest"`), `suggestion-guidelines.md`, rubric
-  evaluator (`rubric.md`, guardrails: ≤7 criteria, scale=10, threshold
-  immutable), meta-cost ledger + `meta_budget_tokens` cap.
-- `hermes token-lens refresh` CLI command + dashboard spawn wiring
-  (plan T11; `_spawn_hermes_action` pattern in `hermes_cli/web_server.py`).
-- Rules/rubric evolution + EVOLUTION.md auto-log (plan T12, user decision D16).
-- Eval suites `evals/eval_suggestions.py`, `evals/eval_evaluator.py` (plan §Testing).
+## REMAINING — small polish / M3 candidates (nothing blocks use)
+
+- **Fingerprint normalization across kinds**: a detector finding
+  (`mcp_disable:gbrain`) and an LLM finding (`llm:mcp:gbrain`) about the SAME
+  target display as two cards. Normalize target-derived fingerprints to one
+  namespace so inheritance + display dedup across kinds.
+- **Estimator quality**: calib_scale ≈ 0.48 on real traffic (chars/4
+  over-counts ~2×). Calibration absorbs it, but /health's drift alert will
+  fire once a median builds. Consider tokenizer-aware estimation.
+- **By-model for backfilled windows**: table reads recorder `api_calls` only;
+  backfill-only windows show charts but an empty model table. Could read
+  core state.db per-model for estimated windows.
+- **README screenshots**; submit to hermes-example-plugins / skill-hub
+  listing once stable (plan §Distribution).
+- **Phase 2 north star** (explicitly out of v1 scope): the replay-lab
+  counterfactual simulator (design plan Approach C). Needs recorded request
+  fingerprints, which M1 now accumulates.
+- **Upstream PRs** (deferred TODOs in the design plan): unsanitized `tools`
+  passthrough on pre_api_request; `sessions:overview-top` slot; fix the
+  `sdk.d.ts` registerSlot arg-order doc bug (chip already filed).
 
 ## Key contracts (verified against hermes-agent source — do not re-derive)
 

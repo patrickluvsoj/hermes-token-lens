@@ -378,8 +378,9 @@ def suggestions() -> Dict[str, Any]:
                 "observed_sessions": core.recorder_observed_session_count(conn),
             },
             "refresh": dict(refresh_row) if refresh_row else None,
-            # M2 evaluator metadata placeholder (rubric version etc.)
-            "rubric_version": None,
+            "rubric_version": conn.execute(
+                "SELECT MAX(version) FROM rubric_versions"
+            ).fetchone()[0],
         }
     finally:
         conn.close()
@@ -540,12 +541,15 @@ def meta() -> Dict[str, Any]:
             (week_ago,),
         ).fetchone()
         rules_version, _ = core.load_rules(conn)
+        rubric_row = conn.execute(
+            "SELECT MAX(version) FROM rubric_versions"
+        ).fetchone()
         return {
             "overhead_tokens_week": int(row["ti"] + row["toq"]),
             "runs_week": row["runs"],
             "analyzer_version": core.ANALYZER_VERSION,
             "rules_version": rules_version,
-            "rubric_version": None,  # M2
+            "rubric_version": rubric_row[0],
         }
     finally:
         conn.close()
