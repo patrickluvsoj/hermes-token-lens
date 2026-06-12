@@ -1,0 +1,14 @@
+{
+  "name": "token-lens",
+  "label": "Token Lens",
+  "description": "Where your tokens go, calibrated to billed totals — with evidence-backed suggestions to cut waste.",
+  "icon": "BarChart3",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/token-lens",
+    "position": "after:sessions"
+  },
+  "slots": ["sessions:top"],
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}
