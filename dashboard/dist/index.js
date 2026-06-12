@@ -563,7 +563,9 @@
             drill && h(Drilldown, { sessionId: drill, onClose: () => setDrill(null) })),
 
           h("div", { key: "models", className: "tl-section tl-table-wrap" },
-            h("div", { className: "tl-h" }, S.byModelHeading),
+            h("div", { className: "tl-h" }, S.byModelHeading,
+              modelsSt.data && modelsSt.data.estimated
+                ? [" ", h("span", { key: "b", className: "tl-badge est" }, S.estBadge)] : null),
             modelsSt.loading ? h(Skeleton, { hgt: 60 })
               : modelsSt.error ? h(ErrorRetry, { onRetry: reloadModels })
               : (modelsSt.data.models || []).length === 0

@@ -228,3 +228,52 @@ def test_db_newer_returns_409(client):
     r = c.get("/api/plugins/token-lens/summary")
     assert r.status_code == 409
     assert r.json()["detail"]["error"] == "db_newer_than_code"
+
+
+# -- by-model backfill fallback (M3-T3) -------------------------------------
+
+def _fake_core_state_db(tmp_path):
+    import sqlite3
+    conn = sqlite3.connect(str(Path(tmp_path) / "state.db"))
+    conn.executescript("""
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY, started_at REAL, ended_at REAL, model TEXT,
+            input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0,
+            cache_read_tokens INTEGER DEFAULT 0, cache_write_tokens INTEGER DEFAULT 0,
+            reasoning_tokens INTEGER DEFAULT 0, message_count INTEGER DEFAULT 0,
+            api_call_count INTEGER DEFAULT 0
+        );
+    """)
+    conn.execute(
+        "INSERT INTO sessions (id, started_at, model, input_tokens, output_tokens,"
+        " api_call_count) VALUES ('s1', ?, 'gpt-5.5', 50000, 5000, 12)",
+        (time.time() - 3600,))
+    conn.commit()
+    conn.close()
+
+
+def test_by_model_falls_back_to_core_when_no_recorder_rows(client):
+    c, _m, t = client
+    _fake_core_state_db(t)
+    body = c.get("/api/plugins/token-lens/by-model?window=7d").json()
+    assert body["estimated"] is True
+    assert body["models"][0]["model"] == "gpt-5.5"
+    assert body["models"][0]["input"] == 50000
+
+
+def test_by_model_prefers_recorder_rows(client):
+    c, _m, t = client
+    _fake_core_state_db(t)
+    conn = core.connect(Path(t) / "token_lens.db")
+    with core.write_txn(conn):
+        core.upsert_pre_call(
+            conn, api_request_id="x:api:1", session_id="s", turn_id="x",
+            ts=time.time(), model="claude", provider="p", request_hash="h",
+            buckets={"system_prompt": 10})
+        core.complete_post_call(
+            conn, api_request_id="x:api:1",
+            usage={"input_tokens": 100, "prompt_tokens": 100, "output_tokens": 5})
+    conn.close()
+    body = c.get("/api/plugins/token-lens/by-model?window=7d").json()
+    assert body["estimated"] is False
+    assert body["models"][0]["model"] == "claude"

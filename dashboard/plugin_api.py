@@ -288,9 +288,42 @@ def by_model(window: str = Query("7d", pattern="^(session|24h|7d)$")) -> Dict[st
             """,
             (start, end),
         ).fetchall()
-        return {"window": window, "models": [dict(r) for r in rows]}
+        if rows:
+            return {"window": window, "models": [dict(r) for r in rows],
+                    "estimated": False}
+        # M3-T3: backfill-only windows have no recorder api_calls — fall back
+        # to core state.db session accumulators so the table matches the
+        # charts after a 30-day import; badged estimated in the UI.
+        models = _by_model_from_core(start, end)
+        return {"window": window, "models": models, "estimated": bool(models)}
     finally:
         conn.close()
+
+
+def _by_model_from_core(start: float, end: float) -> list:
+    try:
+        src = core.open_core_db_readonly()
+        if src is None:
+            return []
+        try:
+            rows = src.execute(
+                """
+                SELECT model,
+                       SUM(input_tokens + cache_read_tokens + cache_write_tokens) AS input,
+                       SUM(output_tokens) AS output,
+                       SUM(api_call_count) AS calls
+                FROM sessions
+                WHERE started_at >= ? AND started_at <= ? AND model != ''
+                      AND model IS NOT NULL
+                GROUP BY model ORDER BY input + output DESC
+                """,
+                (start, end),
+            ).fetchall()
+            return [dict(r) for r in rows if (r["input"] or 0) + (r["output"] or 0) > 0]
+        finally:
+            src.close()
+    except Exception:
+        return []
 
 
 @router.get("/sessions/{session_id}")
