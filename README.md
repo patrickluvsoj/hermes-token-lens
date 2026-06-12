@@ -14,7 +14,7 @@ Core Analytics tells you *how much* you spend. Token Lens tells you **where the 
 ## Install
 
 ```bash
-git clone <repo-url> ~/.hermes/plugins/token-lens
+git clone https://github.com/patrickluvsoj/hermes-token-lens ~/.hermes/plugins/token-lens
 hermes plugins enable token-lens
 ```
 
