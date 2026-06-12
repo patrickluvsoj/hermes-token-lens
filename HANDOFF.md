@@ -1,4 +1,4 @@
-# HANDOFF — Token Lens plugin (M1 ~95% complete)
+# HANDOFF — Token Lens plugin (M1 COMPLETE, verified end-to-end live)
 
 Self-contained status doc for any agent (Claude, Codex, Hermes) or human
 resuming this work. No prior conversation context required.
@@ -70,31 +70,52 @@ HERMES_DASHBOARD_SESSION_TOKEN=$(cat /tmp/token-lens-qa-token) hermes dashboard 
 curl -H "Authorization: Bearer $(cat /tmp/token-lens-qa-token)" http://127.0.0.1:9119/api/plugins/token-lens/health
 ```
 
+## M1 EXIT QA — DONE (2026-06-12, live against the real dashboard + real data)
+
+Full loop verified end-to-end via headless browser ($B / gstack browse) +
+4 real one-shot sessions (`hermes -z`):
+
+- First-run state → **Import 30 days** → progress → charts filled with the
+  user's real history (29.9M tokens, hatched + `~estimated` badge) ✓
+- Backfilled sessions correctly did NOT satisfy gates (0/3 stayed) ✓
+- Live recorder: buckets sum EXACTLY to billed prompt tokens on real traffic
+  (15,654 = 15,654, calib_scale stored) ✓
+- Sweep recovered an unfinalized session within one dashboard visit
+  (precision=exact, ±2% reconciliation passed) ✓
+- Detector gate opened at 3/3; detectors fired and produced a REAL finding:
+  "Disable unused MCP server: gbrain — 3.3k schema tokens/call, 0 results"
+  with evidence, risk note, copy-paste plan ✓
+- Composed work surface renders per variant C: savings figure leading, waste
+  map with expandable MCP legend, split-gate copy "(4/10)", pills below
+  suggestions, KPI strip, 7-day bars, by-model with recorder data, footer ✓
+- Entry card on /sessions: setup state pre-data, then insight strip
+  "Token Lens found 4% avoidable weekly token waste · Top: …" ✓
+
+### Bugs found live and FIXED (commit "fix: two live-QA bugs")
+1. **registerSlot arg order** — runtime is `registerSlot(plugin, slot,
+   component)` (`web/src/plugins/slots.ts`); the host's `sdk.d.ts` documents
+   `(slot, name, component)` and is WRONG. Upstream doc bug worth a PR.
+2. **One-shot data loss** — fast `hermes -z` runs exited before any buffer
+   flush; `on_session_finalize` does not reliably fire in `-z` mode. Posts
+   now flush immediately + atexit backstop; detectors also run gate-checked
+   at session START. If touching the recorder, preserve these properties.
+
+Known minor observations (not bugs): calib_scale ≈ 0.48 on real traffic —
+the chars/4 estimator overestimates ~2× and calibration absorbs it exactly
+as designed, but /health will raise the drift alert once a median builds;
+improving the estimator is an M2 candidate. By-model table shows recorder
+data only (backfill windows show it empty while charts have data).
+
 ## REMAINING — in order
 
-### 1. Finish M1 exit QA (task in progress)
-- Open `http://127.0.0.1:9119/token-lens` in a browser (the printed dashboard
-  URL carries `?token=`; or use the env-token instance above). Verify: tab
-  renders, first-run state shows with the Import button, entry card setup
-  state appears at the top of `/sessions`.
-- Click **Import 30 days** → progress → charts fill hatched (there IS real
-  history in `~/.hermes/state.db` to import).
-- **Recorder live-path:** running gateway/CLI sessions predate the plugin
-  enable, so hooks aren't loaded in them — the recorder-not-detected banner
-  should show after backfill (it keys off zero `api_calls` + core sessions
-  newer than install). Start a NEW `hermes` CLI session, chat once, exit;
-  verify `/summary` flips to recorder data and buckets sum to billed tokens.
-  ⚠️ Do not kill the user's existing gateway (PID may vary) without asking.
-- Walk the QA test plan file (top of this doc) — it lists every state to check.
-- The plan's e2e scripts (`e2e/install_flow.sh`, `e2e/unlock_flow.sh`) are
-  NOT yet written — they're specified in the design plan §Testing.
-
-### 2. M1 polish
+### 1. M1 polish
 - Theme-switch QA (3 Hermes themes) — `--tl-*` vars map to host tokens, verify
-  contrast + hatching in light themes.
+  contrast + hatching in light themes (NOT yet done).
+- Write the plan's e2e scripts `e2e/install_flow.sh`, `e2e/unlock_flow.sh`
+  (specified in design plan §Testing; the manual QA above proved the flows).
 - README screenshots; tag v0.1.0.
 
-### 3. M2 (design plan §Suggestion engine — all specified, none built)
+### 2. M2 (design plan §Suggestion engine — all specified, none built)
 - LLM suggestion generation via `ctx.llm.complete_structured`
   (`purpose="token-lens.suggest"`), `suggestion-guidelines.md`, rubric
   evaluator (`rubric.md`, guardrails: ≤7 criteria, scale=10, threshold
