@@ -1,0 +1,10 @@
+name: token-lens
+version: "0.1.0"
+description: "Token Lens — token consumption analytics and reduction suggestions. Decomposes every session's tokens into categories (system prompt, tool schemas, MCP servers, skills, memory, history, tool results) calibrated to billed totals, and generates evidence-backed suggestions to cut waste. Dashboard tab at /token-lens."
+author: hiroyoshisuzuki
+hooks:
+  - pre_api_request
+  - post_api_request
+  - pre_llm_call
+  - on_session_start
+  - on_session_finalize
