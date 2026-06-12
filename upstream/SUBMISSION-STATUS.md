@@ -1,5 +1,7 @@
 # Upstream submission status
 
+> Full review-ready handoff (WHY, guideline compliance, verification): **UPSTREAM-HANDOFF.md**
+
 Fork: **patrickluvsoj/hermes-agent** (of NousResearch/hermes-agent).
 All three changes are pushed as branches on the fork.
 
