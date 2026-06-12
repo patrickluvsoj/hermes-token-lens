@@ -416,7 +416,9 @@ def decompose_request(
             if tc:
                 add("history.assistant", estimate_tokens(json.dumps(tc, default=str)))
         elif role == "tool":
-            add("tool_results", n)
+            tool_name = msg.get("name") or msg.get("tool_name") or ""
+            server = mcp_server_for_tool(str(tool_name), rules)
+            add(f"tool_results.{server}" if server else "tool_results", n)
         else:
             add("unattributed", n)
 
