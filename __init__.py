@@ -350,6 +350,7 @@ def on_session_finalize(*, session_id: str = "", **_: Any) -> None:
                     retention_days=int(_RECORDER.config().get("retention_days", 90)),
                 )
             _run_detectors_if_due(conn)
+            _run_llm_if_due(conn)  # auto gate: min_sessions AND refresh_every
             _drain_refresh_queue(conn)
         except Exception as exc:
             logger.debug("token-lens finalize work failed (fail-open): %s", exc)
@@ -370,8 +371,46 @@ def _core_session_totals(session_id: str) -> Optional[Dict[str, int]]:
 
 
 # ---------------------------------------------------------------------------
-# Detector + refresh plumbing (detectors themselves live in detectors.py)
+# Detector + refresh plumbing (detectors in detectors.py, LLM in engine.py)
 # ---------------------------------------------------------------------------
+
+_CTX = None  # PluginContext captured at register(); ctx.llm is the M2 facade.
+
+
+def _llm_facade():
+    """Host-owned LLM, or None (fail-open: deterministic paths still work)."""
+    if _CTX is None:
+        return None
+    try:
+        return _CTX.llm
+    except Exception:
+        return None
+
+
+def _run_llm_if_due(conn, *, manual: bool = False) -> Optional[Dict[str, Any]]:
+    """Gated LLM refresh. Manual requests bypass refresh_every but keep
+    min_sessions (plan §Suggestion engine); auto runs honor both."""
+    llm = _llm_facade()
+    if llm is None:
+        return {"status": "skipped",
+                "reason": "AI suggestions unavailable (no LLM configured) — deterministic findings only"}
+    cfg = _RECORDER.config()
+    ok, reason = core.gate_check(
+        conn, kind="llm",
+        min_sessions=int(cfg.get("min_sessions", 10)),
+        refresh_every=0 if manual else int(cfg.get("refresh_every", 5)),
+    )
+    if not ok:
+        return {"status": "skipped", "reason": reason}
+    try:
+        try:
+            from . import engine  # type: ignore
+        except ImportError:
+            import engine  # type: ignore
+        return engine.run_llm_refresh(conn, llm, cfg)
+    except Exception as exc:
+        logger.warning("token-lens: LLM refresh failed (fail-open): %s", exc)
+        return {"status": "skipped", "reason": f"refresh failed: {exc}"}
 
 def _run_detectors_if_due(conn) -> None:
     cfg = _RECORDER.config()
@@ -397,7 +436,7 @@ def _drain_refresh_queue(conn) -> None:
     with core.write_txn(conn):
         core.reclaim_stuck_refreshes(conn)
     rows = conn.execute(
-        "SELECT id FROM refresh_requests WHERE status='pending' ORDER BY id"
+        "SELECT id, source FROM refresh_requests WHERE status='pending' ORDER BY id"
     ).fetchall()
     for row in rows:
         claimed = False
@@ -416,6 +455,11 @@ def _drain_refresh_queue(conn) -> None:
                 _run_detectors_if_due(conn)
             else:
                 status, reason = "skipped", gate_reason
+            # LLM leg: manual requests bypass refresh_every (D5 refresh states
+            # surface the skip reason in the UI verbatim)
+            llm_result = _run_llm_if_due(conn, manual=row["source"] == "manual")
+            if llm_result and llm_result.get("status") == "skipped" and status == "done":
+                status, reason = "skipped", llm_result.get("reason", "")
         except Exception as exc:
             status, reason = "skipped", f"error: {exc}"
         with core.write_txn(conn):
@@ -462,11 +506,83 @@ def _atexit_flush() -> None:
         pass
 
 
+def _cli_setup(subparser) -> None:
+    sub = subparser.add_subparsers(dest="token_lens_cmd")
+    refresh = sub.add_parser("refresh", help="Run a suggestion refresh now (honors gates)")
+    refresh.add_argument("--force", action="store_true",
+                         help="testing override: bypass ALL gates")
+
+
+def _cli_handler(args) -> None:
+    """`hermes token-lens refresh` — manual/cron entry point (plan T11).
+
+    Connects, drains the queue, then runs a manual-semantics refresh
+    (bypasses refresh_every, keeps min_sessions; --force bypasses all gates
+    for testing). Prints a one-line result."""
+    cmd = getattr(args, "token_lens_cmd", None)
+    if cmd != "refresh":
+        print("usage: hermes token-lens refresh [--force]")
+        return
+    try:
+        conn = core.connect()
+    except Exception as exc:
+        print(f"token-lens: cannot open DB: {exc}")
+        return
+    try:
+        _drain_refresh_queue(conn)
+        cfg = _RECORDER.config()
+        ok, reason = core.gate_check(
+            conn, kind="detector",
+            min_sessions=0 if getattr(args, "force", False)
+            else int(cfg.get("detector_min_sessions", 3)),
+        )
+        if ok:
+            _run_detectors_if_due(conn)
+        if getattr(args, "force", False):
+            llm = _llm_facade()
+            if llm is None:
+                print("token-lens: detectors ran; no LLM configured")
+                return
+            try:
+                try:
+                    from . import engine  # type: ignore
+                except ImportError:
+                    import engine  # type: ignore
+                result = engine.run_llm_refresh(conn, llm, cfg)
+            except Exception as exc:
+                result = {"status": "skipped", "reason": str(exc)}
+        else:
+            result = _run_llm_if_due(conn, manual=True) or {}
+        print(f"token-lens refresh: {result.get('status', 'done')}"
+              + (f" — {result['reason']}" if result.get("reason") else "")
+              + (f" ({result.get('shown', 0)} shown, {result.get('hidden', 0)} hidden,"
+                 f" {result.get('tokens', 0)} tokens)"
+                 if result.get("status") == "done" and "shown" in result else ""))
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def register(ctx) -> None:
+    global _CTX
+    _CTX = ctx
     ctx.register_hook("pre_api_request", on_pre_api_request)
     ctx.register_hook("post_api_request", on_post_api_request)
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
     ctx.register_hook("on_session_start", on_session_start)
     ctx.register_hook("on_session_finalize", on_session_finalize)
+    try:
+        ctx.register_cli_command(
+            "token-lens",
+            help="Token Lens: suggestion refresh (manual/cron entry point)",
+            setup_fn=_cli_setup,
+            handler_fn=_cli_handler,
+            description="Run `hermes token-lens refresh` to execute a gated "
+                        "suggestion refresh outside the dashboard.",
+        )
+    except Exception:
+        pass  # older hosts without CLI registration — dashboard queue still works
     import atexit
     atexit.register(_atexit_flush)

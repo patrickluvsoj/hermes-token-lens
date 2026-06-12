@@ -24,6 +24,7 @@ def client(tmp_path, monkeypatch):
     spec.loader.exec_module(mod)
     mod._backfill_job.clear()
     mod._backfill_job.update({"state": "idle"})
+    mod._spawn_refresh_process = lambda: False  # no real subprocesses in tests
     app = FastAPI()
     app.include_router(mod.router, prefix="/api/plugins/token-lens")
     return TestClient(app), mod, tmp_path

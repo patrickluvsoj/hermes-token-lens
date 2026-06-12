@@ -407,13 +407,44 @@ def refresh() -> Dict[str, Any]:
                 "INSERT INTO refresh_requests (requested_at, source) VALUES (?, 'manual')",
                 (time.time(),),
             )
+        spawned = _spawn_refresh_process()
         return {
             "queued": True,
             "request_id": cur.lastrowid,
-            "message": "refresh queued — runs at next session activity",
+            "spawned": spawned,
+            "message": ("refresh running — results in ~1 min" if spawned
+                        else "refresh queued — runs at next session activity"),
         }
     finally:
         conn.close()
+
+
+def _spawn_refresh_process() -> bool:
+    """Spawn `hermes token-lens refresh` detached (mirrors web_server's
+    `_spawn_hermes_action` pattern — that helper is name-gated to a fixed
+    dict, so plugins replicate it). The spawned process is a real Hermes
+    process: loads the plugin, atomically claims the queue row, honors all
+    gates, executes via ctx.llm with the trust gate intact, exits. Failure
+    is non-fatal — the agent-side drain executes the queued row at the next
+    session activity (plan §Suggestion engine)."""
+    import os
+    import subprocess
+    try:
+        log_dir = core.default_db_path().parent / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = open(log_dir / "token-lens-refresh.log", "ab", buffering=0)
+        log_file.write(
+            f"\n=== refresh spawned {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode()
+        )
+        subprocess.Popen(
+            [sys.executable, "-m", "hermes_cli.main", "token-lens", "refresh"],
+            stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
+            env={**os.environ, "HERMES_NONINTERACTIVE": "1"},
+            start_new_session=True,
+        )
+        return True
+    except Exception:
+        return False
 
 
 @router.post("/suggestions/{suggestion_id}/dismiss")
