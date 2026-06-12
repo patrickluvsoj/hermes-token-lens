@@ -463,8 +463,11 @@ def run_llm_refresh(conn, llm, cfg: Dict[str, Any]) -> Dict[str, Any]:
             category.startswith(c + ".") for c in core.CATEGORY_IDS
         ):
             category = "unattributed"
-        fingerprint = "llm:" + re.sub(r"[^a-z0-9:_-]+", "-",
-                                      str(cand.get("target", cand.get("title", ""))).lower())
+        # Canonical, generator-agnostic fingerprint (M3-T1): an LLM finding
+        # about the same target as a detector finding MUST collide so
+        # dismiss/done inheritance works across kinds.
+        fingerprint = core.canonical_fingerprint(
+            str(cand.get("target", cand.get("title", ""))))
         with core.write_txn(conn):
             sid = core.insert_suggestion(
                 conn, run_id=run_id, fingerprint=fingerprint,

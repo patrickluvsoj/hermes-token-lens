@@ -60,7 +60,7 @@ ok, _ = core.gate_check(conn, kind="detector", min_sessions=3)
 check("detector gate opens at 3 sessions", ok)
 inserted = detectors.run_detectors(conn)
 check("detector run produced findings", inserted >= 1)
-row = conn.execute("SELECT * FROM suggestions WHERE fingerprint LIKE 'mcp_disable:%'").fetchone()
+row = conn.execute("SELECT * FROM suggestions WHERE fingerprint LIKE 'mcp:%'").fetchone()
 check("unused-MCP finding with evidence + plan",
       row is not None and "hermes mcp disable ghost-server" in row["plan_md"]
       and "0 tool results" in row["evidence"])

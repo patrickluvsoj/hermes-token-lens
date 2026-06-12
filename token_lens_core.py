@@ -37,7 +37,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Frozen top-level category IDs (design review D14: each owns a fixed palette
 # slot in the UI; IDs never change — only mapping RULES evolve).
@@ -234,7 +234,34 @@ _MIGRATIONS: Dict[int, str] = {
         value TEXT
     );
     """,
+    # v1 -> v2: canonical target-derived fingerprints across kinds (M3-T1).
+    # Old: detector 'mcp_disable:<s>' / named keys; LLM 'llm:<target>'.
+    # New: 'mcp:<s>', 'config:*', 'behavior:*', bare normalized target.
+    # GLOB, not LIKE — '_' is a LIKE wildcard. Idempotent: patterns no
+    # longer match after the rewrite.
+    2: """
+    UPDATE suggestions SET fingerprint = 'mcp:' || substr(fingerprint, 13)
+        WHERE fingerprint GLOB 'mcp_disable:*';
+    UPDATE suggestions SET fingerprint = substr(fingerprint, 5)
+        WHERE fingerprint GLOB 'llm:*';
+    UPDATE suggestions SET fingerprint = 'config:cache-prefix'
+        WHERE fingerprint = 'cache_prefix';
+    UPDATE suggestions SET fingerprint = 'config:system-prompt'
+        WHERE fingerprint = 'system_prompt_trim';
+    UPDATE suggestions SET fingerprint = 'behavior:turn-cap'
+        WHERE fingerprint = 'turn_cap';
+    UPDATE suggestions SET fingerprint = 'behavior:tool-results'
+        WHERE fingerprint = 'tool_results_weight';
+    """,
 }
+
+
+def canonical_fingerprint(target: str) -> str:
+    """Normalize a target identifier into the canonical fingerprint grammar
+    (M3-T1): lowercase, `[^a-z0-9:_-]` collapsed to '-', no generator prefix.
+    Detector and LLM suggestions about the same target MUST collide here so
+    dismiss/done inheritance works across kinds."""
+    return re.sub(r"[^a-z0-9:_-]+", "-", (target or "").lower()).strip("-")
 
 
 def connect(db_path: Optional[Path] = None, *, allow_create: bool = True) -> sqlite3.Connection:
@@ -275,7 +302,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.rollback()
             raise
         version = target
-    # Seed rules v1 if absent (idempotent).
+    # Seed rules v1 + install timestamp if absent (idempotent).
     row = conn.execute("SELECT COUNT(*) FROM category_rules").fetchone()
     if row[0] == 0:
         conn.execute("BEGIN IMMEDIATE")
@@ -283,6 +310,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "INSERT OR IGNORE INTO category_rules (version, rules_json, rationale, created_at) "
             "VALUES (1, ?, 'v1 defaults seeded from hermes prompt markers', ?)",
             (json.dumps(DEFAULT_RULES), time.time()),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO meta_kv (key, value) VALUES ('install_ts', ?)",
+            (str(time.time()),),
         )
         conn.commit()
 

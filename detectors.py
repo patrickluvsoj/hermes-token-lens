@@ -89,7 +89,7 @@ def _candidates(agg: Dict[str, Any]) -> List[Dict[str, Any]]:
             continue
         pct = schema_tokens / week_total * 100
         out.append({
-            "fingerprint": f"mcp_disable:{server}",
+            "fingerprint": f"mcp:{server}",
             "title": f"Disable unused MCP server: {server}",
             "category": key,
             "est_savings_pct": pct,
@@ -120,7 +120,7 @@ def _candidates(agg: Dict[str, Any]) -> List[Dict[str, Any]]:
             potential = (0.60 - hit) * prompt_side
             pct = potential / week_total * 100
             out.append({
-                "fingerprint": "cache_prefix",
+                "fingerprint": "config:cache-prefix",
                 "title": "Cache hit rate is low — stabilize your prompt prefix",
                 "category": "system_prompt",
                 "est_savings_pct": min(pct, 35.0),
@@ -149,7 +149,7 @@ def _candidates(agg: Dict[str, Any]) -> List[Dict[str, Any]]:
         if share >= OVERSIZED_PROMPT_SHARE:
             pct = (share - 0.15) * input_side / week_total * 100  # target ~15%
             out.append({
-                "fingerprint": "system_prompt_trim",
+                "fingerprint": "config:system-prompt",
                 "title": "System prompt + skills index is oversized",
                 "category": "system_prompt",
                 "est_savings_pct": max(pct, 1.0),
@@ -179,7 +179,7 @@ def _candidates(agg: Dict[str, Any]) -> List[Dict[str, Any]]:
             # exploration saves roughly the marginal calls' input share.
             pct = min(25.0, (avg_calls - RUNAWAY_TURNS_AVG_CALLS) / avg_calls * 50)
             out.append({
-                "fingerprint": "turn_cap",
+                "fingerprint": "behavior:turn-cap",
                 "title": "Sessions run long — cap exploratory turns",
                 "category": "history.assistant",
                 "est_savings_pct": max(pct, 2.0),
@@ -204,7 +204,7 @@ def _candidates(agg: Dict[str, Any]) -> List[Dict[str, Any]]:
         share = tool_res / input_side
         pct = (share - 0.25) * input_side / week_total * 100
         out.append({
-            "fingerprint": "tool_results_weight",
+            "fingerprint": "behavior:tool-results",
             "title": "Tool results dominate your context",
             "category": "tool_results",
             "est_savings_pct": max(pct, 2.0),

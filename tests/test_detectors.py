@@ -39,7 +39,7 @@ def test_unused_mcp_server_detected(db):
     for i in range(3):
         _seed_rollup(db, f"s{i}", buckets)
     assert detectors.run_detectors(db) >= 1
-    rows = [r for r in _suggestions(db) if r["fingerprint"] == "mcp_disable:browser-tools"]
+    rows = [r for r in _suggestions(db) if r["fingerprint"] == "mcp:browser-tools"]
     assert len(rows) == 1
     assert "hermes mcp disable browser-tools" in rows[0]["plan_md"]
     assert "0 tool results" in rows[0]["evidence"]
@@ -54,7 +54,7 @@ def test_used_mcp_server_not_flagged(db):
     }
     _seed_rollup(db, "s1", buckets)
     detectors.run_detectors(db)
-    assert not [r for r in _suggestions(db) if r["fingerprint"].startswith("mcp_disable")]
+    assert not [r for r in _suggestions(db) if r["fingerprint"].startswith("mcp:")]
 
 
 def test_low_cache_hit_detected(db):
@@ -62,7 +62,7 @@ def test_low_cache_hit_detected(db):
     totals = {"input": 900_000, "cache_read": 45_000, "billed": 995_000}
     _seed_rollup(db, "s1", buckets, totals=totals, api_calls=40)
     detectors.run_detectors(db)
-    rows = [r for r in _suggestions(db) if r["fingerprint"] == "cache_prefix"]
+    rows = [r for r in _suggestions(db) if r["fingerprint"] == "config:cache-prefix"]
     assert len(rows) == 1
     assert "%" in rows[0]["evidence"]
 
@@ -72,7 +72,7 @@ def test_high_cache_hit_not_flagged(db):
     totals = {"input": 200_000, "cache_read": 700_000, "billed": 950_000}
     _seed_rollup(db, "s1", buckets, totals=totals, api_calls=40)
     detectors.run_detectors(db)
-    assert not [r for r in _suggestions(db) if r["fingerprint"] == "cache_prefix"]
+    assert not [r for r in _suggestions(db) if r["fingerprint"] == "config:cache-prefix"]
 
 
 def test_oversized_system_prompt_detected(db):
@@ -80,7 +80,7 @@ def test_oversized_system_prompt_detected(db):
                "history.user": 400_000, "output": 30_000}
     _seed_rollup(db, "s1", buckets)
     detectors.run_detectors(db)
-    rows = [r for r in _suggestions(db) if r["fingerprint"] == "system_prompt_trim"]
+    rows = [r for r in _suggestions(db) if r["fingerprint"] == "config:system-prompt"]
     assert len(rows) == 1
     assert rows[0]["risk"] == "medium"
 
@@ -89,7 +89,7 @@ def test_runaway_turns_detected(db):
     buckets = {"history.user": 100_000, "output": 10_000}
     _seed_rollup(db, "s1", buckets, api_calls=80)
     detectors.run_detectors(db)
-    assert [r for r in _suggestions(db) if r["fingerprint"] == "turn_cap"]
+    assert [r for r in _suggestions(db) if r["fingerprint"] == "behavior:turn-cap"]
 
 
 def test_quiet_baseline_produces_nothing(db):
