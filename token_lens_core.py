@@ -478,6 +478,70 @@ def calibrate(
 
 
 # ---------------------------------------------------------------------------
+# Self-correcting estimator ratio (M3-T2)
+#
+# chars/4 over-counts real prompts (~2x observed live: calib_scale ≈ 0.48).
+# Calibration keeps totals exact regardless, but a persistently-off estimator
+# (a) skews relative bucket shares and (b) permanently trips /health's drift
+# alert. Fix: learn a per-model correction from our own calibration history.
+#
+# The update MUST be multiplicative: calib_scale is computed against
+# already-corrected estimates, so once the ratio converges the median scale
+# is ~1.0 — assigning instead of multiplying would erase the correction.
+# ---------------------------------------------------------------------------
+
+EST_RATIO_MIN, EST_RATIO_MAX = 0.2, 5.0
+EST_RATIO_MIN_CALLS = 10
+EST_RATIO_WINDOW = 200
+
+
+def learned_est_ratio(conn: sqlite3.Connection, model: str) -> float:
+    row = conn.execute(
+        "SELECT value FROM meta_kv WHERE key=?", (f"est_ratio:{model}",)
+    ).fetchone()
+    if row is None:
+        return 1.0
+    try:
+        return min(EST_RATIO_MAX, max(EST_RATIO_MIN, float(row["value"])))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def update_est_ratios(conn: sqlite3.Connection) -> Dict[str, float]:
+    """Per-model: ratio *= median(recent calib_scale), clamped. Returns the
+    updated ratios. Call from the finalize/background path, never a hot hook."""
+    models = [r["model"] for r in conn.execute(
+        "SELECT DISTINCT model FROM api_calls WHERE model != '' AND calib_scale IS NOT NULL"
+    ).fetchall()]
+    updated: Dict[str, float] = {}
+    for model in models:
+        scales = [r[0] for r in conn.execute(
+            "SELECT calib_scale FROM api_calls WHERE model=? AND calib_scale IS NOT NULL "
+            "ORDER BY ts DESC LIMIT ?", (model, EST_RATIO_WINDOW),
+        ).fetchall()]
+        if len(scales) < EST_RATIO_MIN_CALLS:
+            continue
+        median = sorted(scales)[len(scales) // 2]
+        new_ratio = min(EST_RATIO_MAX, max(
+            EST_RATIO_MIN, learned_est_ratio(conn, model) * median))
+        conn.execute(
+            "INSERT INTO meta_kv (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (f"est_ratio:{model}", repr(new_ratio)),
+        )
+        updated[model] = new_ratio
+    return updated
+
+
+def apply_est_ratio(buckets: Dict[str, int], ratio: float) -> Dict[str, int]:
+    """Scale estimated input buckets by the learned ratio (uniform — preserves
+    shares, normalizes calib_scale toward 1.0 so drift measures residual)."""
+    if ratio == 1.0:
+        return buckets
+    return {k: max(1, int(round(v * ratio))) for k, v in buckets.items()}
+
+
+# ---------------------------------------------------------------------------
 # Recorder writes (called from the agent process; buffered by __init__.py)
 # ---------------------------------------------------------------------------
 

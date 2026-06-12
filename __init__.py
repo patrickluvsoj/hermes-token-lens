@@ -132,6 +132,18 @@ class _Recorder:
                 self._logged_failure = True
         return self._conn
 
+    # -- learned estimator ratio (M3-T2; cached per model) -----------------------
+
+    def est_ratio(self, conn, model: str) -> float:
+        if not hasattr(self, "_est_ratios"):
+            self._est_ratios: Dict[str, float] = {}
+        if model not in self._est_ratios:
+            try:
+                self._est_ratios[model] = core.learned_est_ratio(conn, model)
+            except Exception:
+                self._est_ratios[model] = 1.0
+        return self._est_ratios[model]
+
     # -- schema costing (Constraint 9) ------------------------------------------
 
     def schema_costs(self, tool_count: int) -> Dict[str, int]:
@@ -282,6 +294,9 @@ def on_pre_api_request(
         rules=rules,
         schema_costs=schema_costs,
     )
+    # Self-correcting estimator (M3-T2): scale by the per-model learned ratio
+    # so calib_scale trends to 1.0 and /health drift measures residual only.
+    buckets = core.apply_est_ratio(buckets, _RECORDER.est_ratio(conn, model))
     request_hash = f"tc{tool_count}:r{rules_version}"
     _RECORDER.enqueue_pre({
         "api_request_id": api_request_id,
@@ -349,6 +364,7 @@ def on_session_finalize(*, session_id: str = "", **_: Any) -> None:
                     conn,
                     retention_days=int(_RECORDER.config().get("retention_days", 90)),
                 )
+                core.update_est_ratios(conn)  # M3-T2: learn from this session
             _run_detectors_if_due(conn)
             _run_llm_if_due(conn)  # auto gate: min_sessions AND refresh_every
             _drain_refresh_queue(conn)
