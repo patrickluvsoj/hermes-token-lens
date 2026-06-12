@@ -4,6 +4,14 @@ Token consumption analytics + reduction suggestions for [Hermes Agent](https://g
 
 Core Analytics tells you *how much* you spend. Token Lens tells you **where the tokens go** and **what to change** — every category bucket calibrated so it sums exactly to your billed totals, and every suggestion shipped with evidence and a copy-paste plan executable in a Hermes chat.
 
+![Token Lens tab — suggestion work surface with waste map](docs/screenshots/token-lens-tab.png)
+
+*The entry card on your Sessions page leads with the finding, not the brand:*
+
+![Entry card on the Sessions page](docs/screenshots/entry-card.png)
+
+**Status (v0.3.0):** M1 + M2 + M3 complete. 127 tests, 2 e2e scripts, 2 live-provider evals (evaluator discrimination 8.5/0.5/0.0 vs threshold 6; generation 17/17). Live-verified on a real install: calibrated buckets summed exactly to billed tokens, and the detector + LLM engine independently converged on the same real unused-MCP finding.
+
 ## Install
 
 ```bash
