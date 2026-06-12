@@ -1,4 +1,4 @@
-# HANDOFF — Token Lens plugin (M1 + M2 COMPLETE — v0.2.0, design plan fully implemented)
+# HANDOFF — Token Lens plugin (M1 + M2 + M3 COMPLETE — v0.3.0)
 
 Self-contained status doc for any agent (Claude, Codex, Hermes) or human
 resuming this work. No prior conversation context required.
@@ -130,26 +130,29 @@ data only (backfill windows show it empty while charts have data).
   install → 1 LLM suggestion shown (3,859 tokens, ledgered) that independently
   re-found the same unused `gbrain` MCP server the detector flagged.
 
-## REMAINING — small polish / M3 candidates (nothing blocks use)
+## M3 — DONE (2026-06-12, v0.3.0; see M3-PLAN.md for the spec)
 
-- **Fingerprint normalization across kinds**: a detector finding
-  (`mcp_disable:gbrain`) and an LLM finding (`llm:mcp:gbrain`) about the SAME
-  target display as two cards. Normalize target-derived fingerprints to one
-  namespace so inheritance + display dedup across kinds.
-- **Estimator quality**: calib_scale ≈ 0.48 on real traffic (chars/4
-  over-counts ~2×). Calibration absorbs it, but /health's drift alert will
-  fire once a median builds. Consider tokenizer-aware estimation.
-- **By-model for backfilled windows**: table reads recorder `api_calls` only;
-  backfill-only windows show charts but an empty model table. Could read
-  core state.db per-model for estimated windows.
-- **README screenshots**; submit to hermes-example-plugins / skill-hub
-  listing once stable (plan §Distribution).
-- **Phase 2 north star** (explicitly out of v1 scope): the replay-lab
-  counterfactual simulator (design plan Approach C). Needs recorded request
-  fingerprints, which M1 now accumulates.
-- **Upstream PRs** (deferred TODOs in the design plan): unsanitized `tools`
-  passthrough on pre_api_request; `sessions:overview-top` slot; fix the
-  `sdk.d.ts` registerSlot arg-order doc bug (chip already filed).
+- **T1 canonical fingerprints**: schema v2 migrates `mcp_disable:*`/`llm:*`
+  into one target-derived grammar; dismiss/done cascades across kinds.
+  Live-verified: the doubled gbrain card collapsed to one after migration.
+- **T2 self-correcting estimator**: per-model `est_ratio:<model>` in meta_kv,
+  multiplicative update from calib_scale medians, applied at record time.
+- **T3 by-model fallback**: backfill-only windows read core state.db,
+  badged `~estimated`; recorder rows take precedence.
+- **T4 README**: populated screenshots in `docs/screenshots/` + status.
+- **T5 upstream/**: `0001-fix-sdk-dts-registerslot-order.patch` (verified
+  `git apply --check` clean against the local hermes-agent checkout) + draft
+  PR descriptions for the tools passthrough and overview-top slot.
+
+## REMAINING — user actions + backlog
+
+- **Submit upstream material** (`upstream/`) to NousResearch/hermes-agent —
+  needs a fork + gh auth (user action; a chip for the sdk.d.ts fix exists).
+- **Publish the repo + submit to hermes-example-plugins / skill-hub** — needs
+  a public remote (user action).
+- **BACKLOG: replay-lab counterfactual simulator** (design plan Approach C) —
+  see M3-PLAN.md §BACKLOG. Needs its own design pass before any code; its
+  per-call data prerequisite has been accumulating since M1 install.
 
 ## Key contracts (verified against hermes-agent source — do not re-derive)
 

@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.3.0] — 2026-06-12
+
+**M3: one finding, one card. The estimator corrects itself. Tables match charts.**
+
+Polish round driven entirely by what live QA surfaced.
+
+### What you can do now
+
+- **Dismiss sticks across kinds.** Detector and AI suggestions about the same
+  target now share one canonical fingerprint (`mcp:<server>`, `config:*`,
+  `behavior:*`) — dismissing either retires both, forever, and the duplicate
+  card pair is gone (schema v2 migrates existing data automatically).
+  Verified live: the doubled gbrain card collapsed to one.
+- **The drift alert means something now.** The recorder learns a per-model
+  correction from its own calibration history (live data showed chars/4
+  over-counting ~2×), so `calib_scale` trends to 1.0 and `/health`'s ±25%
+  alert fires on real anomalies instead of permanently.
+- **By-model works after import.** Backfill-only windows now fall back to
+  core's session accumulators (badged `~estimated`) instead of an empty
+  table beside populated charts.
+- **README shows the product** — populated-dashboard screenshots + status.
+- **`upstream/`** — a verified-clean patch for the hermes-agent `sdk.d.ts`
+  registerSlot arg-order doc bug, plus draft PR descriptions for the
+  full-fidelity tools passthrough and the `sessions:overview-top` slot.
+  Submission needs a fork + auth (user action).
+
+### Backlog
+
+The replay-lab counterfactual simulator (design plan Approach C) is
+explicitly backlogged in M3-PLAN.md — it needs its own design pass; the
+per-call data it requires has been accumulating since M1.
+
+### For contributors
+
+127 pytest paths; migration v2 idempotency + cross-kind inheritance pinned.
+
 ## [0.2.0] — 2026-06-12
 
 **M2: the suggestion engine thinks. AI-evaluated fixes, self-evolving rules, hard-capped overhead.**
