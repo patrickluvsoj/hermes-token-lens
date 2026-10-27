@@ -347,10 +347,12 @@ DEFAULT_RULES: Dict[str, Any] = {
         {"category": "memory", "pattern": r"(?ms)^## (?:Relevant )?[Mm]emor(?:y|ies).*?(?=^## |\Z)"},
         {"category": "memory", "pattern": r"(?ms)^## User [Pp]rofile.*?(?=^## |\Z)"},
     ],
-    # tool name prefix -> mcp server extraction. Runtime MCP tools are named
-    # mcp_<server>_<tool>; the raw config target server:tool is stored
-    # alongside so disable-plans address config correctly (eng review D13/T9).
-    "mcp_tool_prefix": r"^mcp_([a-zA-Z0-9-]+)_",
+    # tool name prefix -> mcp server extraction. Hermes registers MCP tools as
+    # mcp__<server>__<tool> (MCP_TOOL_NAME_PREFIX in tools/mcp_tool_schema.py);
+    # other MCP hosts use mcp_<server>_<tool>, so both separators are accepted.
+    # The raw config target server:tool is stored alongside so disable-plans
+    # address config correctly (eng review D13/T9).
+    "mcp_tool_prefix": r"^mcp_{1,2}([A-Za-z0-9_-]+?)_{1,2}",
 }
 
 

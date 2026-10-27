@@ -17,9 +17,11 @@ Invariants (plan Constraint 8 — recorder fails open, ALWAYS):
     never inline in a hook.
 
 Tool-schema costing (plan Constraint 9): per-schema token costs are computed
-in-process from the live tool registry (tools.registry) — the sanitized hook
-payload's tools array is used for NOTHING. Costs are honest best-effort,
-cross-checked against the hook's tool_count, cached per request_hash; the
+in-process from the assembled tool definitions (model_tools), classified by
+tool_search's own deferral policy — the sanitized hook payload's tools array is
+used for NOTHING. Costing the assembled defs rather than the whole of
+tools.registry is what keeps deferred built-ins and MCP tools out of the bill:
+they do not ride the request. Costs are cached per shipped tool count; the
 per-call calibration absorbs residual error into billed-total truth.
 """
 from __future__ import annotations
@@ -147,32 +149,82 @@ class _Recorder:
     # -- schema costing (Constraint 9) ------------------------------------------
 
     def schema_costs(self, tool_count: int) -> Dict[str, int]:
-        """Best-effort per-category schema costs from the live registry.
+        """Per-category schema costs for the SHIPPED tool array.
 
-        Recomputed when the registered tool count changes (registry change);
-        otherwise served from cache. Never reads hook payloads.
+        Costs the tool definitions the request actually carries - the tool_search
+        bridge collapsed, deferred tools excluded - instead of walking
+        ``tools.registry``, which bills every registered schema (deferred
+        built-ins and the whole MCP surface) on every call even though none of it
+        rides the request. Falls back to the registry walk when the agent modules
+        are unavailable. Recomputed when the shipped tool count changes.
         """
         if self._schema_costs is not None and self._schema_costs_tool_count == tool_count:
             return self._schema_costs
         costs: Dict[str, int] = {}
+        rules = core.DEFAULT_RULES
+        shipped: Optional[List[Dict[str, Any]]] = None
         try:
-            from tools.registry import registry  # type: ignore
-            rules = core.DEFAULT_RULES
-            tools = getattr(registry, "all", None)
-            entries = tools() if callable(tools) else getattr(registry, "_tools", {})
-            items = entries.items() if isinstance(entries, dict) else []
-            for name, entry in items:
-                schema = getattr(entry, "schema", None)
-                if schema is None and isinstance(entry, dict):
-                    schema = entry.get("schema")
-                if schema is None:
-                    continue
+            from model_tools import get_tool_definitions  # type: ignore
+
+            try:
+                # Classify the raw defs exactly the way tool_search does, so only
+                # tools that ride the request are costed even when the bridge is
+                # not assembled in this context.
+                from tools.tool_search import classify_tools  # type: ignore
+                from hermes_cli.config import load_config  # type: ignore
+
+                cfg = load_config() or {}
+                defer_cfg = ((cfg.get("tools") or {}).get("tool_search") or {}).get("defer")
+                defer_set = frozenset(defer_cfg) if isinstance(defer_cfg, list) else None
+                raw = get_tool_definitions(quiet_mode=True, skip_tool_search_assembly=True) or []
+                visible, _deferrable = classify_tools(list(raw), defer_set)
+                shipped = list(visible)
+            except Exception:
+                shipped = None
+            if shipped is None:
+                shipped = get_tool_definitions(quiet_mode=True) or []
+            # Bridge tools ride the request too, but classify_tools drops them.
+            try:
+                from tools.tool_search import BRIDGE_TOOL_NAMES  # type: ignore
+
+                for schema in get_tool_definitions(quiet_mode=True) or []:
+                    fn = schema.get("function") if isinstance(schema, dict) else None
+                    if isinstance(fn, dict) and fn.get("name") in BRIDGE_TOOL_NAMES:
+                        shipped.append(schema)
+            except Exception:
+                pass
+            for schema in shipped:
+                fn = schema.get("function") if isinstance(schema, dict) else None
+                name = ""
+                if isinstance(fn, dict):
+                    name = str(fn.get("name") or "")
+                elif isinstance(schema, dict):
+                    name = str(schema.get("name") or "")
                 tok = core.estimate_tokens(json.dumps(schema, default=str))
-                server = core.mcp_server_for_tool(str(name), rules)
+                server = core.mcp_server_for_tool(name, rules)
                 key = f"tool_schemas.mcp.{server}" if server else "tool_schemas.builtin"
                 costs[key] = costs.get(key, 0) + tok
         except Exception:
             costs = {}
+        if not costs:
+            try:
+                from tools.registry import registry  # type: ignore
+
+                tools = getattr(registry, "all", None)
+                entries = tools() if callable(tools) else getattr(registry, "_tools", {})
+                items = entries.items() if isinstance(entries, dict) else []
+                for name, entry in items:
+                    schema = getattr(entry, "schema", None)
+                    if schema is None and isinstance(entry, dict):
+                        schema = entry.get("schema")
+                    if schema is None:
+                        continue
+                    tok = core.estimate_tokens(json.dumps(schema, default=str))
+                    server = core.mcp_server_for_tool(str(name), rules)
+                    key = f"tool_schemas.mcp.{server}" if server else "tool_schemas.builtin"
+                    costs[key] = costs.get(key, 0) + tok
+            except Exception:
+                costs = {}
         self._schema_costs = costs
         self._schema_costs_tool_count = tool_count
         return costs
