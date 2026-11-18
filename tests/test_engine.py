@@ -92,7 +92,8 @@ def test_meta_ledger_records_usage_and_purposes(db):
     run = db.execute("SELECT * FROM suggestion_runs WHERE kind='llm'").fetchone()
     assert run["tokens_input"] == 4000 and run["tokens_output"] == 700
     purposes = json.loads(run["purpose_breakdown_json"])
-    assert set(purposes) == {"token-lens.suggest", "token-lens.evaluate"}
+    assert set(purposes) == {"token-lens.suggest", "token-lens.evaluate", "lifecycle"}
+    assert purposes["lifecycle"]["retired_absent"] == 0
     assert run["rubric_version"] == 1
     assert run["model"] == "fake-1"
 

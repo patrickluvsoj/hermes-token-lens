@@ -450,6 +450,7 @@ def run_llm_refresh(conn, llm, cfg: Dict[str, Any]) -> Dict[str, Any]:
 
     # ---- insert (inheritance applies; unevaluated candidates stay hidden) ----
     shown = hidden = 0
+    emitted: List[str] = []
     for i, cand in enumerate(candidates):
         score = scores_by_index.get(i, {})
         total = float(score.get("total", -1))
@@ -468,6 +469,7 @@ def run_llm_refresh(conn, llm, cfg: Dict[str, Any]) -> Dict[str, Any]:
         # dismiss/done inheritance works across kinds.
         fingerprint = core.canonical_fingerprint(
             str(cand.get("target", cand.get("title", ""))))
+        emitted.append(fingerprint)
         with core.write_txn(conn):
             sid = core.insert_suggestion(
                 conn, run_id=run_id, fingerprint=fingerprint,
@@ -491,5 +493,13 @@ def run_llm_refresh(conn, llm, cfg: Dict[str, Any]) -> Dict[str, Any]:
             shown += 1
         else:
             hidden += 1
+
+    # Findings this pass did not emit are retired (kind-scoped), and stale
+    # shown cards age out (#7).
+    with core.write_txn(conn):
+        retired = core.retire_absent_fingerprints(conn, kind="llm", emitted=emitted)
+        core.retire_stale_shown(
+            conn, stale_after_days=float(cfg.get("stale_after_days", core.STALE_SHOWN_DAYS)))
+    purposes["lifecycle"] = {"retired_absent": retired}
 
     return finish("done", shown=shown, hidden=hidden)

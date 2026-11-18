@@ -256,6 +256,9 @@ _MIGRATIONS: Dict[int, str] = {
 }
 
 
+STALE_SHOWN_DAYS = 14.0  # default; override via config stale_after_days
+
+
 def canonical_fingerprint(target: str) -> str:
     """Normalize a target identifier into the canonical fingerprint grammar
     (M3-T1): lowercase, `[^a-z0-9:_-]` collapsed to '-', no generator prefix.
@@ -941,6 +944,52 @@ def set_suggestion_status(
             (status, now, row["fingerprint"], suggestion_id),
         )
     return True
+
+
+def retire_absent_fingerprints(
+    conn: sqlite3.Connection, *, kind: str, emitted: List[str]
+) -> int:
+    """Retire shown rows of ``kind`` whose fingerprint the finished run did
+    not emit (#7): a finding the generator no longer reports is advice for a
+    problem that no longer exists, not a card to leave on screen forever.
+
+    Scoped to ``kind`` — detector and LLM generators cover different ground,
+    so an LLM run must not retire detector findings it simply didn't look
+    for. User-actioned rows (done/dismissed) and hidden ones are untouched.
+    Callers wrap in write_txn.
+    """
+    if not emitted:
+        cur = conn.execute(
+            "UPDATE suggestions SET status='hidden', status_changed_at=?"
+            " WHERE kind=? AND status='shown'",
+            (time.time(), kind),
+        )
+        return cur.rowcount
+    placeholders = ",".join("?" for _ in emitted)
+    cur = conn.execute(
+        "UPDATE suggestions SET status='hidden', status_changed_at=?"
+        f" WHERE kind=? AND status='shown' AND fingerprint NOT IN ({placeholders})",
+        (time.time(), kind, *emitted),
+    )
+    return cur.rowcount
+
+
+def retire_stale_shown(
+    conn: sqlite3.Connection, *, stale_after_days: float
+) -> int:
+    """Hide shown cards older than ``stale_after_days`` with no user action
+    (#7). Guards against generators going silent (gate closed, plugin
+    disabled) leaving findings on screen indefinitely; a finding that keeps
+    being re-emitted refreshes created_at via the supersede path and never
+    ages. Callers wrap in write_txn.
+    """
+    cutoff = time.time() - stale_after_days * 86400.0
+    cur = conn.execute(
+        "UPDATE suggestions SET status='hidden', status_changed_at=?"
+        " WHERE status='shown' AND created_at < ?",
+        (time.time(), cutoff),
+    )
+    return cur.rowcount
 
 
 def recorder_observed_session_count(conn: sqlite3.Connection) -> int:
