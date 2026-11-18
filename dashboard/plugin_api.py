@@ -399,6 +399,28 @@ def suggestions() -> Dict[str, Any]:
         refresh_row = conn.execute(
             "SELECT * FROM refresh_requests ORDER BY id DESC LIMIT 1"
         ).fetchone()
+        # Why the last LLM pass failed (or that it never ran) — without this
+        # the UI can only show a generic timeout (#6).
+        llm_run_row = conn.execute(
+            "SELECT ts, model, tokens_input, tokens_output, purpose_breakdown_json"
+            " FROM suggestion_runs WHERE kind='llm' ORDER BY ts DESC LIMIT 1"
+        ).fetchone()
+        last_llm_run = None
+        if llm_run_row is not None:
+            try:
+                purposes = json.loads(llm_run_row["purpose_breakdown_json"] or "{}")
+            except Exception:
+                purposes = {}
+            error = next(
+                (v for k, v in purposes.items() if k.endswith(".error")), None
+            )
+            last_llm_run = {
+                "ts": llm_run_row["ts"],
+                "model": llm_run_row["model"],
+                "tokens_input": llm_run_row["tokens_input"],
+                "tokens_output": llm_run_row["tokens_output"],
+                "error": error,
+            }
         return {
             "suggestions": shown[: int(cfg["max_suggestions_shown"])],
             "hidden_count": hidden_count,
@@ -411,6 +433,7 @@ def suggestions() -> Dict[str, Any]:
                 "observed_sessions": core.recorder_observed_session_count(conn),
             },
             "refresh": dict(refresh_row) if refresh_row else None,
+            "last_llm_run": last_llm_run,
             "rubric_version": conn.execute(
                 "SELECT MAX(version) FROM rubric_versions"
             ).fetchone()[0],

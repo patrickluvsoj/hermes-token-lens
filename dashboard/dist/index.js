@@ -46,7 +46,9 @@
     recorderBanner: "Token Lens isn't recording — restart your gateway/CLI session (hooks load at process start).",
     breakerBanner: "Recording paused after repeated errors — see /health.",
     gatePreData: (n, min) => `Findings appear after ${min} recorded sessions — ${n}/${min} so far.`,
-    gateSplit: (n, min) => `Deterministic findings below · AI-evaluated suggestions unlock at ${min} sessions (${n}/${min})`,
+    gateSplit: (n, min) => n >= min
+      ? "Deterministic findings below · AI-evaluated suggestions active"
+      : `Deterministic findings below · AI-evaluated suggestions unlock at ${min} sessions (${n}/${min})`,
     refreshQueued: "refresh queued — runs at next session activity",
     copied: "Copied ✓",
     copyPlan: "Copy plan",
