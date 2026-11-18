@@ -342,7 +342,20 @@ def run_llm_refresh(conn, llm, cfg: Dict[str, Any]) -> Dict[str, Any]:
     rubric_version, rubric_md = active_rubric(conn)
 
     spent_in = spent_out = 0
-    purposes: Dict[str, Dict[str, int]] = {}
+    purposes: Dict[str, Dict[str, Any]] = {}
+
+    def record_failure(stage: str, exc: Exception) -> None:
+        """Persist WHY an LLM stage failed onto the run row (#6): the run
+        kept model=''/0 tokens and no reason, so every failure looked like
+        an unexplained timeout in the UI and left nothing to debug."""
+        purposes[f"{stage}.error"] = {
+            "type": type(exc).__name__,
+            "message": str(exc)[:500],
+        }
+        logger.warning(
+            "token-lens: LLM refresh %s failed (%s): %s",
+            stage, type(exc).__name__, exc,
+        )
 
     def record_usage(purpose: str, usage: Any) -> None:
         nonlocal spent_in, spent_out
@@ -386,7 +399,8 @@ def run_llm_refresh(conn, llm, cfg: Dict[str, Any]) -> Dict[str, Any]:
         model_used = getattr(gen, "model", "") or ""
         record_usage("token-lens.suggest", getattr(gen, "usage", None))
     except Exception as exc:
-        return finish("skipped", f"LLM unavailable: {exc}")
+        record_failure("token-lens.suggest", exc)
+        return finish("skipped", f"LLM unavailable: {type(exc).__name__}: {exc}")
 
     parsed = getattr(gen, "parsed", None)
     if not isinstance(parsed, dict):
@@ -446,7 +460,7 @@ def run_llm_refresh(conn, llm, cfg: Dict[str, Any]) -> Dict[str, Any]:
                     rationale=str(amendment.get("rationale", "")),
                 )
     except Exception as exc:
-        logger.warning("token-lens: evaluator failed (%s) — all candidates hidden", exc)
+        record_failure("token-lens.evaluate", exc)
 
     # ---- insert (inheritance applies; unevaluated candidates stay hidden) ----
     shown = hidden = 0
