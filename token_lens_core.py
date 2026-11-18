@@ -37,7 +37,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Frozen top-level category IDs (design review D14: each owns a fixed palette
 # slot in the UI; IDs never change — only mapping RULES evolve).
@@ -253,6 +253,15 @@ _MIGRATIONS: Dict[int, str] = {
     UPDATE suggestions SET fingerprint = 'behavior:tool-results'
         WHERE fingerprint = 'tool_results_weight';
     """,
+    # v2 -> v3: actual_input was recorded from the INCLUSIVE prompt_tokens
+    # (input + cache_read + cache_write) and cache buckets were then added on
+    # top, double-counting cached tokens in billed_prompt and every derived
+    # total. The rescale itself is Python (JSON bucket surgery) and lives in
+    # _migrate_v3_rescale; this script only marks the version so the ladder
+    # stays the single source of schema truth.
+    3: """
+    SELECT 1;
+    """,
 }
 
 
@@ -301,6 +310,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         except Exception:
             conn.rollback()
             raise
+        if target == 3:
+            _migrate_v3_rescale(conn)
         version = target
     # Seed rules v1 + install timestamp if absent (idempotent).
     row = conn.execute("SELECT COUNT(*) FROM category_rules").fetchone()
@@ -316,6 +327,93 @@ def _migrate(conn: sqlite3.Connection) -> None:
             (str(time.time()),),
         )
         conn.commit()
+
+
+_V3_RESCALE_MARKER = "v3_cache_double_count_rescale"
+
+
+def _rescale_bucket_json(buckets_json: str, factor: float) -> str:
+    """Multiply every numeric bucket value by ``factor`` (JSON in/out)."""
+    try:
+        buckets = json.loads(buckets_json or "{}") or {}
+    except Exception:
+        return buckets_json
+    if factor != 1.0:
+        for k, v in buckets.items():
+            if isinstance(v, (int, float)):
+                buckets[k] = v * factor
+    return json.dumps(buckets)
+
+
+def _migrate_v3_rescale(conn: sqlite3.Connection) -> None:
+    """One-time repair for the inclusive-``prompt_tokens`` recording bug (#4).
+
+    Pre-v3 rows store ``actual_input`` = inclusive prompt total (uncached +
+    cache_read + cache_write), so their ``billed`` arithmetic and the bucket
+    calibration scaled to it count cached tokens twice. Rows recorded with
+    zero cache are already correct (inclusive == exclusive when there is no
+    cache) and are left untouched, which also makes this a no-op on fresh DBs.
+
+    Guarded by a meta_kv marker so a crash between the schema-version commit
+    and this pass cannot apply the subtraction twice.
+    """
+    with write_txn(conn):
+        if conn.execute(
+            "SELECT 1 FROM meta_kv WHERE key=?", (_V3_RESCALE_MARKER,)
+        ).fetchone():
+            return
+        rows = conn.execute(
+            "SELECT api_request_id, actual_input, actual_cache_read,"
+            " actual_cache_write, calib_scale, buckets_json"
+            " FROM api_calls"
+            " WHERE status='complete'"
+            "   AND (actual_cache_read + actual_cache_write) > 0"
+        ).fetchall()
+        for r in rows:
+            cr, cw = r["actual_cache_read"], r["actual_cache_write"]
+            old_input = r["actual_input"]
+            old_billed = old_input + cr + cw
+            new_input = max(0, old_input - cr - cw)
+            factor = (old_input / old_billed) if old_billed > 0 else 1.0
+            conn.execute(
+                "UPDATE api_calls SET actual_input=?, calib_scale=COALESCE(calib_scale,0)*?,"
+                " buckets_json=? WHERE api_request_id=?",
+                (
+                    new_input,
+                    factor,
+                    _rescale_bucket_json(r["buckets_json"], factor),
+                    r["api_request_id"],
+                ),
+            )
+        # Rollups are plain sums of per-call values: subtract the same
+        # double-counted mass and rescale their calibrated buckets to match.
+        for r in conn.execute(
+            "SELECT session_id, totals_json, buckets_json FROM session_rollups"
+        ).fetchall():
+            try:
+                totals = json.loads(r["totals_json"] or "{}") or {}
+            except Exception:
+                totals = {}
+            cr = float(totals.get("cache_read") or 0)
+            cw = float(totals.get("cache_write") or 0)
+            if cr + cw <= 0:
+                continue
+            billed = float(totals.get("billed") or 0)
+            totals["input"] = max(0.0, float(totals.get("input") or 0) - cr - cw)
+            totals["billed"] = max(0.0, billed - cr - cw)
+            factor = (totals["billed"] / billed) if billed > 0 else 1.0
+            conn.execute(
+                "UPDATE session_rollups SET totals_json=?, buckets_json=? WHERE session_id=?",
+                (
+                    json.dumps(totals),
+                    _rescale_bucket_json(r["buckets_json"], factor),
+                    r["session_id"],
+                ),
+            )
+        conn.execute(
+            "INSERT INTO meta_kv (key, value) VALUES (?, ?)",
+            (_V3_RESCALE_MARKER, str(time.time())),
+        )
 
 
 def write_txn(conn: sqlite3.Connection):
@@ -610,7 +708,17 @@ def complete_post_call(
             )
         return
 
-    actual_input = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+    # `input_tokens` is the uncached-only figure from the host's canonical
+    # usage (agent/usage_pricing.py CanonicalUsage); `prompt_tokens` is the
+    # INCLUSIVE total (input + cache_read + cache_write). Prefer the
+    # exclusive field and fall back to the inclusive one only when the host
+    # did not send it — otherwise cache buckets get counted twice in
+    # billed_prompt (#4). Presence matters more than truthiness: a fully
+    # cached call legitimately reports input_tokens == 0.
+    if "input_tokens" in usage:
+        actual_input = int(usage.get("input_tokens") or 0)
+    else:
+        actual_input = int(usage.get("prompt_tokens") or 0)
     cache_read = int(usage.get("cache_read_tokens") or 0)
     cache_write = int(usage.get("cache_write_tokens") or 0)
     output = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
