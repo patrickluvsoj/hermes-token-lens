@@ -79,7 +79,9 @@ class _Recorder:
             cfg.setdefault("recorder_enabled", True)
             cfg.setdefault("min_sessions", 10)
             cfg.setdefault("detector_min_sessions", 3)
+            cfg.setdefault("detector_refresh_every", 3)
             cfg.setdefault("refresh_every", 5)
+            cfg.setdefault("stale_after_days", 14)
             cfg.setdefault("retention_days", 90)
             self._config = cfg
         return self._config
@@ -433,6 +435,7 @@ def _run_detectors_if_due(conn) -> None:
     ok, _reason = core.gate_check(
         conn, kind="detector",
         min_sessions=int(cfg.get("detector_min_sessions", 3)),
+        refresh_every=int(cfg.get("detector_refresh_every", 3)),
     )
     if not ok:
         return
@@ -441,7 +444,8 @@ def _run_detectors_if_due(conn) -> None:
             from . import detectors  # type: ignore
         except ImportError:
             import detectors  # type: ignore
-        detectors.run_detectors(conn)
+        detectors.run_detectors(
+            conn, stale_after_days=float(cfg.get("stale_after_days", 14)))
     except Exception as exc:
         logger.debug("token-lens detectors failed (fail-open): %s", exc)
 

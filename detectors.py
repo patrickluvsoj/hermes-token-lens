@@ -228,7 +228,7 @@ def _candidates(agg: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
-def run_detectors(conn) -> int:
+def run_detectors(conn, *, stale_after_days: Optional[float] = None) -> int:
     """Run all detectors once per watermark. Returns suggestions inserted.
 
     Caller has already passed the detector gate. begin_suggestion_run's
@@ -243,6 +243,7 @@ def run_detectors(conn) -> int:
     if run_id is None:
         return 0  # this watermark already ran
     inserted = 0
+    emitted = []
     for cand in _candidates(agg):
         plan_md = "\n".join(
             f"{i + 1}. {step}" for i, step in enumerate(cand["plan"])
@@ -262,9 +263,16 @@ def run_detectors(conn) -> int:
                 kind="detector",
             )
         inserted += 1
+        emitted.append(cand["fingerprint"])
     with core.write_txn(conn):
+        # A detector that no longer fires means the condition cleared —
+        # retire its card instead of leaving stale advice on screen (#7).
+        retired = core.retire_absent_fingerprints(conn, kind="detector", emitted=emitted)
+        core.retire_stale_shown(
+            conn, stale_after_days=stale_after_days or core.STALE_SHOWN_DAYS)
         conn.execute(
             "UPDATE suggestion_runs SET purpose_breakdown_json=? WHERE id=?",
-            (json.dumps({"detector_candidates": inserted}), run_id),
+            (json.dumps({"detector_candidates": inserted,
+                         "retired_absent": retired}), run_id),
         )
     return inserted

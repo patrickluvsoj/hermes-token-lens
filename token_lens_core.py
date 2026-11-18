@@ -256,6 +256,9 @@ _MIGRATIONS: Dict[int, str] = {
 }
 
 
+STALE_SHOWN_DAYS = 14.0  # default; override via config stale_after_days
+
+
 def canonical_fingerprint(target: str) -> str:
     """Normalize a target identifier into the canonical fingerprint grammar
     (M3-T1): lowercase, `[^a-z0-9:_-]` collapsed to '-', no generator prefix.
@@ -813,6 +816,14 @@ def insert_suggestion(
 ) -> int:
     """Insert a suggestion, inheriting status from its fingerprint history.
 
+    ONE VISIBLE ROW PER FINGERPRINT (#5): when a shown/hidden row for the
+    fingerprint already exists, its content is refreshed in place — evidence,
+    plan, estimate, scores, run attribution — and that row's id is returned.
+    A new row is only inserted when no visible row exists, so repeated
+    detector/LLM runs supersede the card instead of stacking copies. A
+    refreshed row is set to 'shown'; callers re-hide below-threshold
+    candidates (engine.py does exactly that on the returned row).
+
     SINGLE-STATEMENT inheritance (eng delta review D22): the status lookup is
     embedded in the INSERT ... SELECT so a concurrent dismiss in the dashboard
     process can never be missed — there is no read-then-insert window. Callers
@@ -832,6 +843,24 @@ def insert_suggestion(
         savings (then 'shown' with the evidence-changed note appended)
       * no actioned row -> 'shown'
     """
+    visible = conn.execute(
+        "SELECT id FROM suggestions WHERE fingerprint=? AND status IN ('shown','hidden') "
+        "ORDER BY id DESC LIMIT 1",
+        (fingerprint,),
+    ).fetchone()
+    if visible is not None:
+        conn.execute(
+            """UPDATE suggestions SET run_id=?, title=?, evidence=?, plan_md=?,
+                   category=?, est_savings_pct=?, risk=?, kind=?, scores_json=?,
+                   created_at=?, status='shown'
+               WHERE id=?""",
+            (
+                run_id, title, evidence, plan_md, category,
+                float(est_savings_pct), risk, kind, json.dumps(scores or {}),
+                time.time(), visible["id"],
+            ),
+        )
+        return int(visible["id"])
     cur = conn.execute(
         """
         INSERT INTO suggestions (run_id, fingerprint, title, evidence, plan_md,
@@ -917,6 +946,52 @@ def set_suggestion_status(
     return True
 
 
+def retire_absent_fingerprints(
+    conn: sqlite3.Connection, *, kind: str, emitted: List[str]
+) -> int:
+    """Retire shown rows of ``kind`` whose fingerprint the finished run did
+    not emit (#7): a finding the generator no longer reports is advice for a
+    problem that no longer exists, not a card to leave on screen forever.
+
+    Scoped to ``kind`` — detector and LLM generators cover different ground,
+    so an LLM run must not retire detector findings it simply didn't look
+    for. User-actioned rows (done/dismissed) and hidden ones are untouched.
+    Callers wrap in write_txn.
+    """
+    if not emitted:
+        cur = conn.execute(
+            "UPDATE suggestions SET status='hidden', status_changed_at=?"
+            " WHERE kind=? AND status='shown'",
+            (time.time(), kind),
+        )
+        return cur.rowcount
+    placeholders = ",".join("?" for _ in emitted)
+    cur = conn.execute(
+        "UPDATE suggestions SET status='hidden', status_changed_at=?"
+        f" WHERE kind=? AND status='shown' AND fingerprint NOT IN ({placeholders})",
+        (time.time(), kind, *emitted),
+    )
+    return cur.rowcount
+
+
+def retire_stale_shown(
+    conn: sqlite3.Connection, *, stale_after_days: float
+) -> int:
+    """Hide shown cards older than ``stale_after_days`` with no user action
+    (#7). Guards against generators going silent (gate closed, plugin
+    disabled) leaving findings on screen indefinitely; a finding that keeps
+    being re-emitted refreshes created_at via the supersede path and never
+    ages. Callers wrap in write_txn.
+    """
+    cutoff = time.time() - stale_after_days * 86400.0
+    cur = conn.execute(
+        "UPDATE suggestions SET status='hidden', status_changed_at=?"
+        " WHERE status='shown' AND created_at < ?",
+        (time.time(), cutoff),
+    )
+    return cur.rowcount
+
+
 def recorder_observed_session_count(conn: sqlite3.Connection) -> int:
     """Sessions that count toward gates: recorder provenance only —
     backfilled sessions never satisfy gates (plan P4/P5 provenance rule)."""
@@ -935,7 +1010,10 @@ def gate_check(
 ) -> Tuple[bool, str]:
     """Evaluate the suggestion gates for a run of ``kind``.
 
-    Detector runs (D9): gate only on detector_min_sessions.
+    Detector runs (D9): gate on detector_min_sessions plus, when
+    ``refresh_every`` is passed, at least that many NEW sessions since the
+    last run of the same kind — without it every recorded session triggers a
+    fresh pass and the same findings are re-emitted one session later (#5).
     LLM runs: min_sessions AND refresh_every new sessions since the last
     LLM run's watermark.
     Returns (ok, reason-if-not).
@@ -943,10 +1021,11 @@ def gate_check(
     observed = recorder_observed_session_count(conn)
     if observed < min_sessions:
         return False, f"needs {min_sessions} recorded sessions — {observed}/{min_sessions} so far"
-    if kind == "llm" and refresh_every:
+    if refresh_every:
         row = conn.execute(
-            "SELECT watermark FROM suggestion_runs WHERE kind='llm' "
-            "ORDER BY ts DESC LIMIT 1"
+            "SELECT watermark FROM suggestion_runs WHERE kind=? "
+            "ORDER BY ts DESC LIMIT 1",
+            (kind,),
         ).fetchone()
         if row is not None and row["watermark"] is not None:
             last = int(row["watermark"])
